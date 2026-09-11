@@ -6,10 +6,11 @@
 <title>Demo Shop — checkout (EUD-4042 stand)</title>
 <link rel="stylesheet" href="stand.css">
 
-<!-- Same script order as index.html. This page exists so the returning-visitor
-     case can be exercised by navigating between pages, not only by reloading,
-     and so the `purchase` event (the one customers care most about missing)
-     gets its own page. -->
+<!-- Same script order as index.html (see the comment there — it must not be
+     reshuffled). This page exists so the returning-visitor case can be
+     exercised by navigating between pages, not only by reloading, and so the
+     `purchase` event (the one customers care most about missing) gets its own
+     page. -->
 <script>
   window.UC_STAND_PAGE = {
     name: 'Checkout / purchase',
@@ -35,8 +36,23 @@
   };
 </script>
 <script src="uc-gtm-kit.js"></script>
+
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-NSGZ3XN5');</script>
+<!-- End Google Tag Manager -->
+
+<script>window.ucStand.start();</script>
 </head>
 <body>
+
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NSGZ3XN5"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 
 <header class="shop-head">
   <span class="logo">demo·shop</span>

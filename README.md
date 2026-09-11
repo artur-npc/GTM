@@ -25,7 +25,27 @@ page load.
 | `index.html` | `view_item`, `add_to_cart` | main scenario, reloads |
 | `checkout.html` | `begin_checkout`, `purchase` | returning visitor via navigation; conversion tag |
 
-Both share `uc-gtm-kit.js`, which owns the whole instrumented setup.
+## Script order on the page
+
+Container `GTM-NSGZ3XN5` is installed the standard way — the snippet pasted as
+high in the `<head>` as possible, the `<noscript>` iframe at the top of `<body>`. The
+instrumentation sits around it in two phases, and the order must not be changed:
+
+```html
+<script>window.UC_STAND_PAGE = { name: …, ecom: [ … ] };</script>
+<script src="uc-gtm-kit.js"></script>   <!-- dataLayer recorder, then Consent Mode defaults -->
+
+<!-- Google Tag Manager -->  …verbatim snippet…  <!-- End Google Tag Manager -->
+
+<script>window.ucStand.start();</script> <!-- CMP loader, then the eCommerce events -->
+```
+
+Phase 1 must run first for two reasons: the recorder has to own `dataLayer.push`
+before anything pushes, and Consent Mode defaults have to be registered before the
+container loads. Everything else — the CMP and the shop's events — happens after the
+container, exactly as on a customer page.
+
+To point the stand at a different container, edit the snippet in both HTML files.
 
 ## Configuration
 
@@ -39,7 +59,6 @@ https://artur-npc.github.io/GTM/?settingsId=XXXX&gtm=GTM-XXXXXX&service=Facebook
 | Param | Default | Meaning |
 |---|---|---|
 | `settingsId` | *(none — must be set)* | CMP configuration to load |
-| `gtm` | `GTM-NSGZ3XN5` | GTM container ID. Set to empty to skip the container entirely |
 | `loader` | PR 1628 build | `pr`, `prod`, or a full loader URL |
 | `sandbox` | `1` | adds `data-sandbox="1"` |
 | `service` | *(none)* | DPS name **exactly** as spelled in the Admin Interface, for the simulated gated tag. Omitted → falls back to the `marketing` category |
@@ -78,8 +97,9 @@ Data Layer.
 
 ## GTM container setup (once, by hand)
 
-The container is configured the way the official Usercentrics documentation prescribes for
-consent-aware non-Google tags (Data Layer Variable + `consent_status` trigger).
+The container snippet is already on the pages; what follows is the tag/trigger/variable setup
+**inside** container `GTM-NSGZ3XN5`, done the way the official Usercentrics documentation
+prescribes for consent-aware non-Google tags (Data Layer Variable + `consent_status` trigger).
 
 ### 1. Variable — `Facebook Pixel Variable`
 

@@ -1,18 +1,23 @@
 /* ============================================================================
  * EUD-4042 / CTS-2487 — consent_status early emit test stand
  *
- * Reproduces a customer GTM setup:
- *   1. Google Consent Mode v2 defaults (all denied + wait_for_update)
- *   2. GTM container snippet
- *   3. Usercentrics CMP loader (PR build by default)
- *   4. eCommerce events pushed immediately on page render
+ * Reproduces a customer GTM setup and instruments it, so the order of dataLayer
+ * events, the timing of the consent_status push relative to the CMP's own
+ * network calls, and the state of the ucGcmStatus snapshot are all visible
+ * without DevTools.
  *
- * and instruments it so the order of dataLayer events, the timing of the
- * consent_status push relative to the CMP's own network calls, and the state of
- * the ucGcmStatus snapshot are all visible without DevTools.
+ * The page drives it in two phases, because the GTM container snippet is pasted
+ * into the HTML verbatim the way Google's install instructions require:
  *
- * Each page sets window.UC_STAND_PAGE before loading this script:
- *   window.UC_STAND_PAGE = { name: 'Home', ecom: [ {event:'view_item', ...} ] };
+ *   <script>window.UC_STAND_PAGE = { name: 'Home', ecom: [ … ] };</script>
+ *   <script src="uc-gtm-kit.js"></script>   <- phase 1: dataLayer recorder,
+ *                                              then Consent Mode v2 defaults
+ *   … the GTM container snippet, verbatim …
+ *   <script>window.ucStand.start();</script> <- phase 2: CMP loader, then the
+ *                                               eCommerce events
+ *
+ * Phase 1 has to run first: the recorder must own dataLayer.push before
+ * anything pushes, and Consent Mode defaults must precede the container.
  *
  * Config resolution for every option: ?query param  >  localStorage  >  default.
  * A query param is persisted, so it only has to be passed once.
@@ -30,7 +35,6 @@
     loader: 'https://web.cmp.usercentrics-sandbox.eu/ui/pr/1628/loader.js',
     settingsId: '',
     sandbox: '1',
-    gtm: 'GTM-NSGZ3XN5',
     pixel: '000000000000000',
     // DPS name exactly as spelled in the Admin Interface — the consent_status
     // payload keys are service names, so the simulated consent-gated tag looks
@@ -302,17 +306,15 @@
   });
   gtag('set', 'ads_data_redaction', true);
 
-  // 2. GTM container.
-  function injectGtm() {
-    if (!cfg.gtm) {
-      record('warn', 'GTM container not configured', 'pass ?gtm=GTM-XXXXXX');
-      return;
+  // 2. The GTM container is pasted into the page HTML, not injected here.
+  //    Its ID is read back off the script tag the snippet inserts, for display.
+  function detectGtmContainer() {
+    var scripts = document.querySelectorAll('script[src*="googletagmanager.com/gtm.js"]');
+    for (var i = 0; i < scripts.length; i++) {
+      var m = /[?&]id=([^&]+)/.exec(scripts[i].src);
+      if (m) return decodeURIComponent(m[1]);
     }
-    window.dataLayer.push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
-    var s = document.createElement('script');
-    s.async = true;
-    s.src = 'https://www.googletagmanager.com/gtm.js?id=' + encodeURIComponent(cfg.gtm);
-    document.head.appendChild(s);
+    return '';
   }
 
   // 3. Usercentrics CMP. Injected dynamically so the loader URL / settingsId /
@@ -343,9 +345,14 @@
     });
   }
 
-  injectGtm();
-  injectCmp();
-  pushEcom();
+  // Phase 2, called by the page once the GTM snippet has run.
+  var started = false;
+  function start() {
+    if (started) return;
+    started = true;
+    injectCmp();
+    pushEcom();
+  }
 
   /* --------------------------------------------------------------- CMP events */
 
@@ -693,7 +700,7 @@
     lines.push('page:       ' + PAGE.name + '  (' + location.href + ')');
     lines.push('loader:     ' + cfg.loader);
     lines.push('settingsId: ' + cfg.settingsId + '   data-sandbox: ' + (cfg.sandbox ? '1' : '(off)'));
-    lines.push('GTM:        ' + (cfg.gtm || '(not configured)') + '   pixel: ' + cfg.pixel);
+    lines.push('GTM:        ' + (detectGtmContainer() || '(no container on page)') + '   pixel: ' + cfg.pixel);
     lines.push('service:    ' + (cfg.service || '(falling back to marketing category)'));
     lines.push('GPC:        ' + (atLoad.gpc ? 'ACTIVE' : 'off'));
     lines.push('');
@@ -747,10 +754,11 @@
       row.appendChild(el('span', 'v', v));
       cfgHost.appendChild(row);
     }
+    var container = detectGtmContainer();
     cfgRow('settingsId', cfg.settingsId || 'NOT SET — pass ?settingsId=…', !cfg.settingsId);
     cfgRow('loader', cfg.loader.replace('https://', ''));
     cfgRow('data-sandbox', cfg.sandbox ? '1' : 'off');
-    cfgRow('GTM', cfg.gtm || 'NOT SET — pass ?gtm=GTM-XXXXXX', !cfg.gtm);
+    cfgRow('GTM', container || 'no container snippet on this page', !container);
     cfgRow('pixel ID', cfg.pixel);
     cfgRow('service (DPS)', cfg.service || 'marketing category (fallback)', !cfg.service);
     cfgRow('GPC', atLoad.gpc ? 'ACTIVE' + (cfg.gpc === '1' ? ' (shimmed by ?gpc=1)' : ' (browser)') : 'off');
@@ -836,6 +844,7 @@
 
   /* Expose for console use / automation. */
   window.ucStand = {
+    start: start,
     cfg: cfg,
     atLoad: atLoad,
     timeline: timeline,

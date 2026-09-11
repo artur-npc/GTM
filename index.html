@@ -9,11 +9,12 @@
 <!-- ===========================================================================
      Script order below mirrors a real customer page and MUST NOT be reshuffled:
 
-       1. uc-gtm-kit.js  — installs the dataLayer recorder, then in this order:
-            a) Consent Mode v2 defaults (all denied + wait_for_update: 2000)
-            b) GTM container snippet
-            c) Usercentrics CMP loader  (async, PR build by default)
-            d) eCommerce events, pushed synchronously
+       1. UC_STAND_PAGE        — which eCommerce events this page pushes
+       2. uc-gtm-kit.js        — dataLayer recorder, then Consent Mode v2
+                                 defaults (all denied + wait_for_update: 2000)
+       3. GTM container snippet, verbatim, as high in the head as possible
+       4. ucStand.start()      — Usercentrics CMP loader (async), then the
+                                 eCommerce events, pushed synchronously
 
      The CMP loader is injected before the eCom pushes — i.e. as early as best
      practice allows — so anything late in the dataLayer is the SDK's own async
@@ -43,8 +44,23 @@
   };
 </script>
 <script src="uc-gtm-kit.js"></script>
+
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-NSGZ3XN5');</script>
+<!-- End Google Tag Manager -->
+
+<script>window.ucStand.start();</script>
 </head>
 <body>
+
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NSGZ3XN5"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 
 <header class="shop-head">
   <span class="logo">demo·shop</span>
