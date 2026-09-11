@@ -108,6 +108,8 @@
     }
   }
 
+  var TAMPER_FLAG = 'uc-stand:tampered';
+
   var atLoad = {
     gcmStatus: readJson('ucGcmStatus'),
     hasUcString: (function () {
@@ -118,18 +120,35 @@
       }
     })(),
     gpc: navigator.globalPrivacyControl === true,
+    // Set by the "break a guard" buttons just before they reload. Consumed once,
+    // because the SDK repairs the snapshot during the very load that follows.
+    tampered: (function () {
+      try {
+        var v = sessionStorage.getItem(TAMPER_FLAG);
+        sessionStorage.removeItem(TAMPER_FLAG);
+        return v;
+      } catch (e) {
+        return null;
+      }
+    })(),
   };
 
   /* --------------------------------------------------------------- timeline */
 
-  var timeline = []; // { t, kind, label, detail }
+  var timeline = []; // { t, kind, label, detail, phase }
   var listeners = [];
+
+  // Everything up to UC_UI_INITIALIZED (plus a grace period) is the SDK's own
+  // init. Pushes after that come from user actions — accepting in the banner
+  // legitimately emits another consent_status, and counting those as duplicates
+  // would flag the de-dup requirement as broken when it is not.
+  var phase = 'init';
 
   function now() {
     return Math.round(performance.now());
   }
   function record(kind, label, detail) {
-    timeline.push({ t: now(), kind: kind, label: label, detail: detail });
+    timeline.push({ t: now(), kind: kind, label: label, detail: detail, phase: phase });
     listeners.forEach(function (fn) {
       try {
         fn();
@@ -321,18 +340,25 @@
 
   /* --------------------------------------------------------------- CMP events */
 
+  var bannerShown = false;
+
   window.addEventListener('UC_UI_INITIALIZED', function () {
     record('cmp', 'UC_UI_INITIALIZED', null);
+    setTimeout(function () {
+      phase = 'post';
+    }, 500);
   });
   window.addEventListener('UC_UI_CMP_EVENT', function (e) {
-    record('cmp', 'UC_UI_CMP_EVENT ' + (e.detail && e.detail.type), e.detail);
+    var type = e.detail && e.detail.type;
+    if (type === 'CMP_SHOWN') bannerShown = true;
+    record('cmp', 'UC_UI_CMP_EVENT ' + type, e.detail);
   });
 
   /* ----------------------------------------------------------------- verdict */
 
-  function consentStatusEntries() {
+  function consentStatusEntries(includePost) {
     return timeline.filter(function (e) {
-      return e.kind === 'consent-status';
+      return e.kind === 'consent-status' && (includePost || e.phase === 'init');
     });
   }
 
@@ -371,33 +397,43 @@
     if (atLoad.gpc) {
       return { code: 'AC3', early: false, why: 'Global Privacy Control is active — GPC is only honoured after cmpData.' };
     }
-    if (cs.reshowAfterDays && cs.updatedAt === undefined) {
-      // updatedAt lives in ucData/ucString, not in the snapshot — the resurface
-      // guards cannot be fully evaluated from here; flagged rather than guessed.
+    if (atLoad.tampered) {
       return {
-        code: 'AC2/AC3',
-        early: null,
-        why: 'snapshot carries reshowAfterDays=' + cs.reshowAfterDays +
-          '; whether a resurface is due depends on the consent timestamp inside ucString — check manually.',
+        code: 'AC3',
+        early: false,
+        why: 'the snapshot was deliberately broken before this load (' + atLoad.tampered +
+          ') — the guard must skip the early emit.',
       };
     }
+    // The resurface guards depend on the consent timestamp, which lives inside
+    // the compressed ucString and is not readable here. So AC2 is the
+    // expectation, and a resurface (observable: the banner reopens) is accepted
+    // as the correct alternative outcome rather than scored as a failure.
+    var caveat = '';
+    if (cs.reshowAfterDays) caveat += ' Snapshot carries reshowAfterDays=' + cs.reshowAfterDays + '.';
+    if (cs.renewConsentsTimestamp) caveat += ' Snapshot carries renewConsentsTimestamp.';
+    if (caveat) caveat += ' If a resurface is due, no early emit is the correct outcome (AC3).';
+
     return {
       code: 'AC2',
       early: true,
-      why: 'returning visitor, snapshot matches this settingsId, no GPC — expect ONE early consent_status, ' +
-        'pushed before the fetchCmpData response.',
+      resurfacePossible: !!caveat,
+      why:
+        'returning visitor, snapshot matches this settingsId, no GPC — expect ONE early consent_status, ' +
+        'pushed before the fetchCmpData response.' + caveat,
     };
   }
 
   function verdict() {
     var exp = expectation();
     var events = consentStatusEntries();
+    var postEvents = consentStatusEntries(true).length - events.length;
     var lines = [];
     var status = 'info';
 
     lines.push('Expected on this load: ' + exp.code + ' — ' + exp.why);
     lines.push('');
-    lines.push('consent_status pushes: ' + events.length);
+    lines.push('consent_status pushes during init: ' + events.length);
 
     if (!events.length) {
       lines.push('  (none yet — still initializing, or the CMP did not emit at all)');
@@ -409,6 +445,9 @@
     events.slice(1).forEach(function (e, i) {
       lines.push('  extra push #' + (i + 2) + ' at t=' + e.t + 'ms');
     });
+    if (postEvents) {
+      lines.push('plus ' + postEvents + ' after a user action (expected — not counted against the de-dup rule)');
+    }
     lines.push('fetchCmpData response at: ' + (net.cmpData === null ? 'not observed yet' : 't=' + net.cmpData + 'ms'));
 
     var wasEarly = net.cmpData !== null && first < net.cmpData;
@@ -421,10 +460,10 @@
     }
     lines.push('');
 
-    // Exactly one consent_status per load is the de-dup requirement (AC2).
+    // Exactly one consent_status during init is the de-dup requirement (AC2).
     if (events.length > 1) {
       status = 'fail';
-      lines.push('FAIL — ' + events.length + ' consent_status events. Exactly one per page load is required;');
+      lines.push('FAIL — ' + events.length + ' consent_status events during init. Exactly one is required;');
       lines.push('       the early emit must suppress the later authoritative push.');
     } else if (exp.early === true) {
       if (wasEarly) {
@@ -433,9 +472,14 @@
       } else if (net.cmpData === null) {
         status = 'info';
         lines.push('… waiting for the cmpData request to be observed.');
+      } else if (exp.resurfacePossible && bannerShown) {
+        status = 'pass';
+        lines.push('PASS — no early emit, and the banner reopened: a resurface was due, so skipping the');
+        lines.push('       early emit is the correct behaviour (AC3). Re-accept to test AC2 on the next load.');
       } else {
         status = 'fail';
-        lines.push('FAIL — a returning visitor got only the late push. The early emit did not happen.');
+        lines.push('FAIL — a returning visitor got only the late push, and no resurface happened.');
+        lines.push('       The early emit did not fire when it should have.');
       }
     } else if (exp.early === false) {
       if (wasEarly) {
@@ -446,6 +490,21 @@
         status = 'pass';
         lines.push('PASS — single late consent_status, no early emit (as expected for ' + exp.code + ').');
       }
+    }
+
+    // AC4 / AC5: the snapshot must be rewritten to match the applied consent on
+    // every load, so a mismatch heals itself and a missing one is backfilled.
+    var liveSnap = readJson('ucGcmStatus');
+    var before = atLoad.gcmStatus && atLoad.gcmStatus.consentStatus;
+    var after = liveSnap && liveSnap.consentStatus;
+    if (after && (!before || before.consentHash !== after.consentHash)) {
+      lines.push('');
+      lines.push(
+        !before
+          ? 'Snapshot was backfilled this load (AC5) — the next visit is eligible for the early emit.'
+          : 'Snapshot self-healed this load (AC4): consentHash ' +
+            String(before.consentHash).slice(0, 12) + '… -> ' + String(after.consentHash).slice(0, 12) + '…',
+      );
     }
 
     // AC8: the consent-gated tag and the eCom events it should have seen.
@@ -538,7 +597,7 @@
    * Same manipulations the unit tests do (consentStatusEarlyEmit.test.ts), but
    * against real localStorage, so each AC3 guard can be exercised by hand.   */
 
-  function tamper(mutate, note) {
+  function tamper(mutate, note, label) {
     var snap = readJson('ucGcmStatus');
     if (!snap || !snap.consentStatus) {
       alert('No ucGcmStatus snapshot yet. Accept consent once, then reload.');
@@ -547,6 +606,7 @@
     mutate(snap.consentStatus);
     try {
       localStorage.setItem('ucGcmStatus', JSON.stringify(snap));
+      sessionStorage.setItem(TAMPER_FLAG, label);
     } catch (e) {}
     if (confirm(note + '\n\nReload now to see the guard take effect?')) location.reload();
   }
@@ -555,33 +615,49 @@
     [
       'Break consentHash',
       function () {
-        tamper(function (cs) {
-          cs.consentHash = 'hash-of-a-consent-that-was-since-replaced';
-        }, 'consentHash broken — simulates consent restored via CDCS / cross-device / v2 migration.\nExpected: no early emit, and the snapshot self-heals (AC3 + AC4).');
+        tamper(
+          function (cs) {
+            cs.consentHash = 'hash-of-a-consent-that-was-since-replaced';
+          },
+          'consentHash broken — simulates consent restored via CDCS / cross-device / v2 migration.\nExpected: no early emit, and the snapshot self-heals (AC3 + AC4).',
+          'consentHash',
+        );
       },
     ],
     [
       'Break settingsVersion',
       function () {
-        tamper(function (cs) {
-          cs.settingsVersion = 'some-other-outdated-version';
-        }, 'settingsVersion set to an outdated value.\nExpected: freshness guard blocks the early emit (AC3).');
+        tamper(
+          function (cs) {
+            cs.settingsVersion = 'some-other-outdated-version';
+          },
+          'settingsVersion set to an outdated value.\nExpected: freshness guard blocks the early emit (AC3).',
+          'settingsVersion',
+        );
       },
     ],
     [
       'Force reshowAfterDays',
       function () {
-        tamper(function (cs) {
-          cs.reshowAfterDays = 0.0001;
-        }, 'reshowAfterDays set to ~0 — consent is now "older than" its validity.\nExpected: no early emit, banner resurfaces (AC3).');
+        tamper(
+          function (cs) {
+            cs.reshowAfterDays = 0.0001;
+          },
+          'reshowAfterDays set to ~0 — consent is now "older than" its validity.\nExpected: no early emit, banner resurfaces (AC3).',
+          'reshowAfterDays',
+        );
       },
     ],
     [
       'Force renewConsentsTimestamp',
       function () {
-        tamper(function (cs) {
-          cs.renewConsentsTimestamp = Math.floor(Date.now() / 1000);
-        }, 'renewConsentsTimestamp set to now — an admin-triggered renewal is due.\nExpected: no early emit (AC3).');
+        tamper(
+          function (cs) {
+            cs.renewConsentsTimestamp = Math.floor(Date.now() / 1000);
+          },
+          'renewConsentsTimestamp set to now — an admin-triggered renewal is due.\nExpected: no early emit (AC3).',
+          'renewConsentsTimestamp',
+        );
       },
     ],
   ];
