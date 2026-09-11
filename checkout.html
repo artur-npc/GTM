@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo Shop — checkout (EUD-4042 stand)</title>
+<link rel="stylesheet" href="stand.css">
+
+<!-- Same script order as index.html. This page exists so the returning-visitor
+     case can be exercised by navigating between pages, not only by reloading,
+     and so the `purchase` event (the one customers care most about missing)
+     gets its own page. -->
+<script>
+  window.UC_STAND_PAGE = {
+    name: 'Checkout / purchase',
+    ecom: [
+      {
+        event: 'begin_checkout',
+        ecommerce: {
+          currency: 'EUR',
+          value: 129.0,
+          items: [{ item_id: 'SKU-8842', item_name: 'Trail Runner GTX', price: 129.0, quantity: 1 }],
+        },
+      },
+      {
+        event: 'purchase',
+        ecommerce: {
+          transaction_id: 'T-' + Date.now(),
+          currency: 'EUR',
+          value: 129.0,
+          items: [{ item_id: 'SKU-8842', item_name: 'Trail Runner GTX', price: 129.0, quantity: 1 }],
+        },
+      },
+    ],
+  };
+</script>
+<script src="uc-gtm-kit.js"></script>
+</head>
+<body>
+
+<header class="shop-head">
+  <span class="logo">demo·shop</span>
+  <nav>
+    <a href="index.html">Product</a>
+    <a href="checkout.html" aria-current="page">Checkout</a>
+    <a href="https://github.com/artur-npc/GTM#readme">How to run the tests</a>
+  </nav>
+</header>
+
+<main>
+  <h1>Order confirmed</h1>
+  <p class="lede">
+    Pushes <code>begin_checkout</code> and <code>purchase</code> on load. A conversion tag gated on
+    marketing consent has to fire on this page load or the transaction is lost — the
+    outcome AC8 is about.
+  </p>
+
+  <div class="note">
+    Navigate here from the product page after accepting consent. The panel should report a single
+    early <code>consent_status</code>, and the simulated consent-gated tag should fire.
+  </div>
+
+  <div class="product">
+    <h2>Trail Runner GTX</h2>
+    <div class="price">€129.00</div>
+    <p>1 × SKU-8842 — included in the <code>purchase</code> payload.</p>
+  </div>
+</main>
+
+<aside id="uc-panel"></aside>
+
+</body>
+</html>

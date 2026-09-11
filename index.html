@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo Shop — product page (EUD-4042 stand)</title>
+<link rel="stylesheet" href="stand.css">
+
+<!-- ===========================================================================
+     Script order below mirrors a real customer page and MUST NOT be reshuffled:
+
+       1. uc-gtm-kit.js  — installs the dataLayer recorder, then in this order:
+            a) Consent Mode v2 defaults (all denied + wait_for_update: 2000)
+            b) GTM container snippet
+            c) Usercentrics CMP loader  (async, PR build by default)
+            d) eCommerce events, pushed synchronously
+
+     The CMP loader is injected before the eCom pushes — i.e. as early as best
+     practice allows — so anything late in the dataLayer is the SDK's own async
+     init chain, not a script-placement artefact.
+     =========================================================================== -->
+<script>
+  window.UC_STAND_PAGE = {
+    name: 'Home / product page',
+    ecom: [
+      {
+        event: 'view_item',
+        ecommerce: {
+          currency: 'EUR',
+          value: 129.0,
+          items: [{ item_id: 'SKU-8842', item_name: 'Trail Runner GTX', price: 129.0, quantity: 1 }],
+        },
+      },
+      {
+        event: 'add_to_cart',
+        ecommerce: {
+          currency: 'EUR',
+          value: 129.0,
+          items: [{ item_id: 'SKU-8842', item_name: 'Trail Runner GTX', price: 129.0, quantity: 1 }],
+        },
+      },
+    ],
+  };
+</script>
+<script src="uc-gtm-kit.js"></script>
+</head>
+<body>
+
+<header class="shop-head">
+  <span class="logo">demo·shop</span>
+  <nav>
+    <a href="index.html" aria-current="page">Product</a>
+    <a href="checkout.html">Checkout</a>
+    <a href="https://github.com/artur-npc/GTM#readme">How to run the tests</a>
+  </nav>
+</header>
+
+<main>
+  <h1>Trail Runner GTX</h1>
+  <p class="lede">
+    Product page for the EUD-4042 / CTS-2487 test stand. On load it pushes
+    <code>view_item</code> and <code>add_to_cart</code> into the dataLayer immediately —
+    the situation customers reported, where eCommerce events beat
+    <code>consent_status</code> on every page view.
+  </p>
+
+  <div class="note">
+    Watch the panel on the right. On a <strong>first</strong> visit there should be one late
+    <code>consent_status</code>. Accept consent, then <strong>reload</strong>: the same event must now
+    arrive <em>before</em> the <code>fetchCmpData</code> response, exactly once.
+  </div>
+
+  <div class="product">
+    <h2>Trail Runner GTX</h2>
+    <div class="price">€129.00</div>
+    <p>Waterproof trail shoe. SKU-8842 — the item id used in the eCommerce payloads.</p>
+  </div>
+
+  <div class="product">
+    <h2>Merino Base Layer</h2>
+    <div class="price">€69.00</div>
+    <p>Filler product so the page looks like a shop. Not tracked.</p>
+  </div>
+</main>
+
+<aside id="uc-panel"></aside>
+
+</body>
+</html>
