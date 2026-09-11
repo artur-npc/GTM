@@ -157,57 +157,66 @@
   }
 
   /* --- dataLayer interception ------------------------------------------------
-   * GTM replaces dataLayer.push with its own implementation when gtm.js runs.
-   * A plain wrapper would be thrown away, so `push` is installed as an
-   * accessor: reads always return our hook, and GTM's assignment is captured
-   * as the downstream implementation instead of replacing us.                */
+   * A plain wrapper installed before gtm.js runs. When GTM takes over it reads
+   * the existing `push` and keeps calling it as the "original", so every later
+   * push still flows through here.
+   *
+   * Do NOT install this as an accessor whose getter always returns the hook:
+   * GTM captures `dataLayer.push` as its original and calls it from its own
+   * replacement, so a getter that hands back the hook makes the two call each
+   * other forever ("Maximum call stack size exceeded", and the page dies).
+   *
+   * The poller below is the safety net for the opposite case — a consumer that
+   * appends without going through `push` at all.                            */
 
   window.dataLayer = window.dataLayer || [];
-  var downstreamPush = Array.prototype.push;
+  var seen = window.dataLayer.length;
 
-  function hookedPush() {
-    for (var i = 0; i < arguments.length; i++) {
-      var arg = arguments[i];
-      var name;
-      // gtag(...) forwards its own `arguments` object: array-like, first slot a
-      // command string. Checked before the plain-object branch, which would
-      // otherwise read a numeric key off it.
-      var isGtagCall =
-        arg && typeof arg === 'object' && typeof arg.length === 'number' && typeof arg[0] === 'string';
-      if (isGtagCall) {
-        name = 'gtag ' + arg[0] + (typeof arg[1] === 'string' ? ' ' + arg[1] : '');
-      } else if (arg && typeof arg === 'object') {
-        name = arg.event || Object.keys(arg)[0] || '(object)';
-      } else {
-        name = String(arg);
-      }
-
-      var kind = 'other';
-      if (/^gtag (consent|set)/.test(name)) kind = 'consent-mode';
-      else if (name === 'consent_status') kind = 'consent-status';
-      else if (/^gtm\./.test(name)) kind = 'gtm';
-      else if (PAGE.ecom && PAGE.ecom.some(function (e) { return e.event === name; })) kind = 'ecom';
-
-      record(kind, name, arg);
-
-      if (kind === 'consent-status') onConsentStatus(arg);
-      if (kind === 'ecom') onEcomEvent(name);
+  // Records one dataLayer entry. `suffix` marks entries the poller found rather
+  // than saw pushed, whose timestamp is approximate.
+  function classify(arg, suffix) {
+    var name;
+    // gtag(...) forwards its own `arguments` object: array-like, first slot a
+    // command string. Checked before the plain-object branch, which would
+    // otherwise read a numeric key off it.
+    var isGtagCall =
+      arg && typeof arg === 'object' && typeof arg.length === 'number' && typeof arg[0] === 'string';
+    if (isGtagCall) {
+      name = 'gtag ' + arg[0] + (typeof arg[1] === 'string' ? ' ' + arg[1] : '');
+    } else if (arg && typeof arg === 'object') {
+      name = arg.event || Object.keys(arg)[0] || '(object)';
+    } else {
+      name = String(arg);
     }
-    return downstreamPush.apply(window.dataLayer, arguments);
+
+    var kind = 'other';
+    if (/^gtag (consent|set)/.test(name)) kind = 'consent-mode';
+    else if (name === 'consent_status') kind = 'consent-status';
+    else if (/^gtm\./.test(name)) kind = 'gtm';
+    else if (PAGE.ecom && PAGE.ecom.some(function (e) { return e.event === name; })) kind = 'ecom';
+
+    record(kind, name + (suffix || ''), arg);
+
+    if (kind === 'consent-status') onConsentStatus(arg);
+    if (kind === 'ecom') onEcomEvent(name);
   }
 
-  try {
-    Object.defineProperty(window.dataLayer, 'push', {
-      configurable: true,
-      get: function () {
-        return hookedPush;
-      },
-      set: function (fn) {
-        downstreamPush = fn; // GTM's own push — keep it, keep our hook on top
-      },
-    });
-  } catch (e) {
-    window.dataLayer.push = hookedPush; // last resort: plain wrapper
+  function hookedPush() {
+    for (var i = 0; i < arguments.length; i++) classify(arguments[i]);
+    var result = Array.prototype.push.apply(window.dataLayer, arguments);
+    seen = window.dataLayer.length;
+    return result;
+  }
+
+  window.dataLayer.push = hookedPush;
+
+  // Safety net: pick up anything that reached the array without calling push.
+  function drainUnseen() {
+    while (window.dataLayer.length > seen) {
+      var entry = window.dataLayer[seen];
+      seen++;
+      classify(entry, ' (observed)');
+    }
   }
 
   /* --- CMP network timings ---------------------------------------------------
@@ -800,6 +809,7 @@
     var snapshotHost = host.querySelector('#uc-snapshot');
 
     function refresh() {
+      drainUnseen();
       var v = verdict();
       verdictHost.textContent = v.text;
       verdictHost.className = 'verdict ' + v.status;
@@ -830,9 +840,14 @@
     atLoad: atLoad,
     timeline: timeline,
     net: net,
-    verdict: verdict,
+    verdict: function () {
+      drainUnseen();
+      return verdict();
+    },
     report: report,
+    drain: drainUnseen,
     consentStatusCount: function () {
+      drainUnseen();
       return consentStatusEntries().length;
     },
   };
