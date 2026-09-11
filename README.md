@@ -39,7 +39,7 @@ https://artur-npc.github.io/GTM/?settingsId=XXXX&gtm=GTM-XXXXXX&service=Facebook
 | Param | Default | Meaning |
 |---|---|---|
 | `settingsId` | *(none — must be set)* | CMP configuration to load |
-| `gtm` | *(none)* | GTM container ID. Omitted → no container is injected, the rest still works |
+| `gtm` | `GTM-NSGZ3XN5` | GTM container ID. Set to empty to skip the container entirely |
 | `loader` | PR 1628 build | `pr`, `prod`, or a full loader URL |
 | `sandbox` | `1` | adds `data-sandbox="1"` |
 | `service` | *(none)* | DPS name **exactly** as spelled in the Admin Interface, for the simulated gated tag. Omitted → falls back to the `marketing` category |
@@ -54,6 +54,17 @@ written when consent is saved — so leave `sandbox=1` on unless you know you wa
 
 > `data-sandbox` is parsed as `!!string` in `cmp.ts`, so `data-sandbox="false"` would also be truthy.
 > The kit omits the attribute entirely when `sandbox=0`.
+
+## Domain allow list
+
+The CMP refuses to initialize on a host that is not on the configuration's allow list — the console
+shows *“The domain … has not been added to the allow list for this Usercentrics account.”* and nothing
+renders.
+
+`artur-npc.github.io` is already allow-listed on the shared sandbox configurations
+(`HTrWecvQcUoC94`, `GQIS-mIN1kW_ah`, `cqNAsnaCNNTg5s`). For your own settingsId, add it under
+Admin Interface → Configuration → Domains. `localhost` is **not** allow-listed, which is why this
+stand is hosted rather than run locally.
 
 ## CMP configuration prerequisites
 

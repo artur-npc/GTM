@@ -30,7 +30,7 @@
     loader: 'https://web.cmp.usercentrics-sandbox.eu/ui/pr/1628/loader.js',
     settingsId: '',
     sandbox: '1',
-    gtm: '',
+    gtm: 'GTM-NSGZ3XN5',
     pixel: '000000000000000',
     // DPS name exactly as spelled in the Admin Interface — the consent_status
     // payload keys are service names, so the simulated consent-gated tag looks
