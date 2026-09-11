@@ -4,7 +4,12 @@ A throwaway shop page that reproduces the customer setup behind
 [CTS-2487](https://usercentrics.atlassian.net/browse/CTS-2487) and lets every acceptance criterion of
 [EUD-4042](https://usercentrics.atlassian.net/browse/EUD-4042) be checked by hand.
 
-**Live:** https://artur-npc.github.io/GTM/
+**Live:**
+[artur-npc.github.io/GTM/?settingsId=HTrWecvQcUoC94](https://artur-npc.github.io/GTM/?settingsId=HTrWecvQcUoC94&service=Facebook%20Pixel)
+
+> **No banner?** The CMP script is only added once a `settingsId` is given. Opening the stand
+> without one shows a chooser instead of a banner — that is not a CMP, GTM or Admin Interface
+> problem. The panel's first row says `settingsId NOT SET` when this is the case.
 
 ## What bug this is about
 

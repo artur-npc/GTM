@@ -52,6 +52,48 @@ h1 { font-size: 22px; margin: 0 0 6px; }
 .product .price { color: var(--accent); font-weight: 600; }
 .product p { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
 
+.setup-needed {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  padding: 18px 20px;
+  margin-bottom: 24px;
+}
+.setup-needed h2 { margin: 0 0 8px; font-size: 17px; color: var(--warn); }
+.setup-needed p { margin: 0 0 14px; font-size: 14px; }
+.setup-needed .setup-foot { margin: 14px 0 0; color: var(--muted); font-size: 13px; }
+.setup-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.setup-choices a {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ink);
+  text-decoration: none;
+}
+.setup-choices a:hover { border-color: var(--accent); color: var(--accent); }
+.setup-own { display: flex; gap: 8px; margin-top: 12px; }
+.setup-own input {
+  flex: 1;
+  max-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+}
+.setup-own button {
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 7px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.setup-own button:hover { border-color: var(--accent); color: var(--accent); }
+
 .note {
   border-left: 3px solid var(--accent);
   background: #eef4ff;

@@ -321,10 +321,18 @@
   //    sandbox flag can be swapped from the panel without editing the HTML.
   //    NOTE: data-sandbox is parsed as !!string in cmp.ts — "false" would also
   //    be truthy, so the attribute is omitted entirely when sandbox is off.
+  // Sandbox configurations that already have artur-npc.github.io on their domain
+  // allow list, offered as one-click choices when no settingsId is given.
+  var PRESETS = [
+    { label: 'GDPR', id: 'HTrWecvQcUoC94', note: 'Google Consent Mode on, one Data Layer — the main scenario' },
+    { label: 'TCF', id: 'GQIS-mIN1kW_ah', note: 'TCF configuration' },
+    { label: 'US / CCPA', id: 'cqNAsnaCNNTg5s', note: 'US configuration' },
+  ];
+
   function injectCmp() {
     if (document.getElementById('usercentrics-cmp')) return;
     if (!cfg.settingsId) {
-      record('warn', 'settingsId not configured', 'pass ?settingsId=…');
+      record('warn', 'settingsId not configured — no CMP on this page', 'pick one, or pass ?settingsId=…');
       return;
     }
     var s = document.createElement('script');
@@ -719,7 +727,62 @@
     return lines.join('\n');
   }
 
+  // Without a settingsId there is no CMP and therefore no banner — the single
+  // most likely reason the stand looks broken. Say so on the page itself.
+  function buildSettingsIdChooser() {
+    if (cfg.settingsId) return;
+    var main = document.querySelector('main');
+    if (!main) return;
+
+    var box = el('div', 'setup-needed');
+    box.appendChild(el('h2', '', 'No settingsId — that is why there is no banner'));
+    box.appendChild(
+      el(
+        'p',
+        '',
+        'The CMP script is not added to the page until a configuration is chosen. Nothing is wrong with ' +
+          'the GTM container or the Admin Interface. Pick one of the shared sandbox configurations ' +
+          '(already allow-listed for this domain), or append ?settingsId=… for your own:',
+      ),
+    );
+
+    var list = el('div', 'setup-choices');
+    PRESETS.forEach(function (p) {
+      var a = el('a', '', p.label + ' — ' + p.id);
+      a.href = '?settingsId=' + encodeURIComponent(p.id);
+      a.title = p.note;
+      list.appendChild(a);
+    });
+    box.appendChild(list);
+
+    var form = el('form', 'setup-own');
+    var input = el('input');
+    input.type = 'text';
+    input.placeholder = 'your own settingsId';
+    var submit = el('button', '', 'Use it');
+    submit.type = 'submit';
+    form.appendChild(input);
+    form.appendChild(submit);
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var v = input.value.trim();
+      if (v) location.search = '?settingsId=' + encodeURIComponent(v);
+    });
+    box.appendChild(form);
+    box.appendChild(
+      el(
+        'p',
+        'setup-foot',
+        'Your own configuration needs three things: this domain on its allow list, Google Consent Mode on, ' +
+          'and at least one Data Layer configured.',
+      ),
+    );
+
+    main.insertBefore(box, main.firstChild);
+  }
+
   function buildPanel() {
+    buildSettingsIdChooser();
     var host = document.getElementById('uc-panel');
     if (!host) return;
 
