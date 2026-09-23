@@ -28,11 +28,11 @@
   /* ------------------------------------------------------------------ config */
 
   var DEFAULTS = {
-    // PR 1628 build carrying the EUD-4042 fix. The sandbox API domain is baked
+    // PR 1684 build carrying the EUD-7091 fix. The sandbox API domain is baked
     // into this bundle at build time (.env.pr), so it always talks to sandbox
     // for settings/cmpData — but consent SAVES still follow the data-sandbox
     // flag below, and the snapshot is written on save, so keep sandbox on.
-    loader: 'https://web.cmp.usercentrics-sandbox.eu/ui/pr/1628/loader.js',
+    loader: 'https://web.cmp.usercentrics-sandbox.eu/ui/pr/1684/loader.js',
     settingsId: '',
     sandbox: '1',
     pixel: '000000000000000',
@@ -44,6 +44,10 @@
     // harness does (packages/ui/cmp/src/public/test/index.ts), so the GPC guard
     // can be exercised without browser flags or extensions. Not persisted.
     gpc: '',
+    // ?wix=1 sets window.ucSkipGtagUpdates = 'true' before the loader runs — the
+    // flag Wix sites set so the CMP leaves gtag updates to Wix (EUD-4468). EUD-7091
+    // excludes those sites from the early emit altogether. Not persisted.
+    wix: '',
   };
 
   var LS_PREFIX = 'uc-stand:';
@@ -63,7 +67,7 @@
     } catch (e) {}
   }
 
-  var NOT_PERSISTED = { gpc: true }; // per-load toggles, must not stick
+  var NOT_PERSISTED = { gpc: true, wix: true }; // per-load toggles, must not stick
 
   var query = new URLSearchParams(location.search);
   var cfg = {};
@@ -97,6 +101,8 @@
     }
   }
 
+  if (cfg.wix === '1') window.ucSkipGtagUpdates = 'true';
+
   /* --------------------------------------------------- state at page load ---
    * Snapshotted before the CMP runs, so the panel can tell a first visit
    * (nothing cached -> no early emit expected, AC1) from a returning visit
@@ -112,10 +118,45 @@
     }
   }
 
+  // EUD-7091 moved the snapshot from the top-level `ucGcmStatus` key into
+  // `ucData.gcmStatus`, and deletes the old key on every load. Reading the new
+  // location first and falling back to the old one keeps the stand usable
+  // against both builds and shows which one produced the data.
+  var SNAP_NEW = 'ucData.gcmStatus';
+  var SNAP_LEGACY = 'ucGcmStatus (legacy key)';
+
+  function readSnapshot() {
+    var ucData = readJson('ucData');
+    if (ucData && ucData.gcmStatus) return { where: SNAP_NEW, value: ucData.gcmStatus };
+    var legacy = readJson('ucGcmStatus');
+    if (legacy) return { where: SNAP_LEGACY, value: legacy };
+    return { where: null, value: null };
+  }
+
+  function writeSnapshot(where, value) {
+    if (where === SNAP_NEW) {
+      var ucData = readJson('ucData') || {};
+      ucData.gcmStatus = value;
+      localStorage.setItem('ucData', JSON.stringify(ucData));
+    } else {
+      localStorage.setItem('ucGcmStatus', JSON.stringify(value));
+    }
+  }
+
   var TAMPER_FLAG = 'uc-stand:tampered';
+  var snapAtLoad = readSnapshot();
 
   var atLoad = {
-    gcmStatus: readJson('ucGcmStatus'),
+    gcmStatus: snapAtLoad.value,
+    snapWhere: snapAtLoad.where,
+    legacyKey: (function () {
+      try {
+        return localStorage.getItem('ucGcmStatus') !== null;
+      } catch (e) {
+        return false;
+      }
+    })(),
+    wix: window.ucSkipGtagUpdates === 'true',
     hasUcString: (function () {
       try {
         return !!localStorage.getItem('ucString');
@@ -386,6 +427,30 @@
     });
   }
 
+  // The GCM `gtag('consent', 'update', …)` command. The stand's own
+  // `consent default` is a different label, so it is never counted here.
+  function consentUpdateEntries(includePost) {
+    return timeline.filter(function (e) {
+      return e.label === 'gtag consent update' && (includePost || e.phase === 'init');
+    });
+  }
+
+  // Both signals are pushed synchronously, back to back, so they usually share a
+  // millisecond — order has to come from the push sequence, not the timestamp.
+  function seq(entry) {
+    return timeline.indexOf(entry);
+  }
+
+  // EUD-7091 writes ucData.gcmStatus and removes the legacy key; the EUD-4042
+  // build writes the legacy key. Decided from what is in storage after init.
+  function buildFlavor() {
+    var ucData = readJson('ucData');
+    if (ucData && ucData.gcmStatus) return '7091';
+    if (readJson('ucGcmStatus')) return '4042';
+    if (atLoad.legacyKey) return '7091';
+    return 'unknown';
+  }
+
   // What the code under test should do on THIS page load, given the state that
   // was in localStorage before the CMP started. Mirrors the guards in
   // WebSdk.ts:299-321 — everything the page can observe without the SDK.
@@ -393,6 +458,15 @@
     var snap = atLoad.gcmStatus;
     var cs = snap && snap.consentStatus;
 
+    if (atLoad.legacyKey && atLoad.snapWhere === SNAP_LEGACY && buildFlavor() === '7091') {
+      return {
+        code: 'MIGRATION',
+        early: false,
+        why: 'visitor upgraded from the EUD-4042 build (legacy ucGcmStatus key, nothing in ucData.gcmStatus). ' +
+          'The legacy key must be deleted, no early emit this visit, and the snapshot rebuilt in ucData.gcmStatus ' +
+          'with gcmUpdate — the next visit is eligible for the early emit.',
+      };
+    }
     if (!cs) {
       if (atLoad.hasUcString) {
         return {
@@ -421,6 +495,22 @@
     if (atLoad.gpc) {
       return { code: 'AC3', early: false, why: 'Global Privacy Control is active — GPC is only honoured after cmpData.' };
     }
+    if (atLoad.wix) {
+      return {
+        code: 'WIX',
+        early: false,
+        why: 'ucSkipGtagUpdates is set (Wix) — no early emit of either signal, and no Consent Update from the CMP ' +
+          'at all; consent_status arrives on the late path only.',
+      };
+    }
+    if (buildFlavor() !== '4042' && !snap.gcmUpdate) {
+      return {
+        code: 'AC5',
+        early: false,
+        why: 'snapshot has no gcmUpdate yet (written by the EUD-4042 build, or dropped) — no early emit of either ' +
+          'signal this visit; gcmUpdate is backfilled for the next one.',
+      };
+    }
     if (atLoad.tampered) {
       return {
         code: 'AC3',
@@ -443,8 +533,8 @@
       early: true,
       resurfacePossible: !!caveat,
       why:
-        'returning visitor, snapshot matches this settingsId, no GPC — expect ONE early consent_status, ' +
-        'pushed before the fetchCmpData response.' + caveat,
+        'returning visitor, snapshot matches this settingsId, no GPC — expect ONE early Consent Update, then ONE ' +
+        'early consent_status, both pushed before the fetchCmpData response.' + caveat,
     };
   }
 
@@ -516,9 +606,61 @@
       }
     }
 
+    // EUD-7091: Consent Update must be early too, exactly once, and BEFORE consent_status.
+    var updates = consentUpdateEntries();
+    var flavor = buildFlavor();
+    lines.push('');
+    lines.push('Consent Update pushes during init: ' + updates.length);
+    if (updates.length) {
+      lines.push('  first at t=' + updates[0].t + 'ms' +
+        (net.cmpData !== null ? (updates[0].t < net.cmpData ? '  (EARLY — before the cmpData response)' : '  (LATE — after the cmpData response)') : ''));
+    }
+    if (updates.length > 1) {
+      status = 'fail';
+      lines.push('FAIL — ' + updates.length + ' Consent Update commands during init; exactly one is required.');
+    }
+    if (updates.length) {
+      var updateFirst = seq(updates[0]) < seq(events[0]);
+      lines.push('Order: ' + (updateFirst
+        ? 'Consent Update → consent_status — OK'
+        : 'consent_status → Consent Update — WRONG (the EUD-7091 bug)'));
+      if (!updateFirst) {
+        status = 'fail';
+        if (flavor === '4042') lines.push('       This is the EUD-4042 build — pass ?loader= with the EUD-7091 PR build.');
+      }
+    } else if (exp.code === 'WIX') {
+      lines.push('No Consent Update from the CMP — expected on Wix (ucSkipGtagUpdates).');
+    } else if (exp.early === true && flavor !== '4042') {
+      status = 'fail';
+      lines.push('FAIL — returning visitor with an explicit consent, but no Consent Update during init.');
+    } else {
+      lines.push('No Consent Update this load — expected for an implicit consent with nothing granted.');
+    }
+    if (exp.early === true && updates.length && net.cmpData !== null && updates[0].t >= net.cmpData && flavor !== '4042') {
+      status = 'fail';
+      lines.push('FAIL — Consent Update was not emitted early (it landed after the cmpData response).');
+    }
+    if (exp.code === 'WIX' && wasEarly) {
+      status = 'fail';
+      lines.push('FAIL — consent_status was emitted early on a Wix site; EUD-7091 excludes Wix entirely.');
+    }
+
+    // Migration: the EUD-7091 build must delete the legacy top-level key.
+    if (atLoad.legacyKey) {
+      var legacyNow = readJson('ucGcmStatus') !== null;
+      lines.push('');
+      if (legacyNow && flavor !== '4042') {
+        status = 'fail';
+        lines.push('FAIL — legacy ucGcmStatus key still present after init; the migration cleanup did not run.');
+      } else if (!legacyNow) {
+        lines.push('Legacy ucGcmStatus key was present at load and is gone now (EUD-7091 migration) — OK.');
+      }
+    }
+
     // AC4 / AC5: the snapshot must be rewritten to match the applied consent on
     // every load, so a mismatch heals itself and a missing one is backfilled.
-    var liveSnap = readJson('ucGcmStatus');
+    var liveSnapInfo = readSnapshot();
+    var liveSnap = liveSnapInfo.value;
     var before = atLoad.gcmStatus && atLoad.gcmStatus.consentStatus;
     var after = liveSnap && liveSnap.consentStatus;
     if (after && (!before || before.consentHash !== after.consentHash)) {
@@ -529,6 +671,10 @@
           : 'Snapshot self-healed this load (AC4): consentHash ' +
             String(before.consentHash).slice(0, 12) + '… -> ' + String(after.consentHash).slice(0, 12) + '…',
       );
+    }
+    if (liveSnap && liveSnap.gcmUpdate && !(atLoad.gcmStatus && atLoad.gcmStatus.gcmUpdate)) {
+      lines.push('');
+      lines.push('gcmUpdate was backfilled this load — the next visit is eligible for the early emit of both signals.');
     }
 
     // AC8: the consent-gated tag and the eCom events it should have seen.
@@ -599,20 +745,21 @@
 
   function renderSnapshot(host) {
     host.innerHTML = '';
-    var live = readJson('ucGcmStatus');
+    var live = readSnapshot();
+    var ucData = readJson('ucData');
 
-    host.appendChild(el('div', 'sub', 'At page load (before the CMP ran):'));
-    host.appendChild(
-      el('pre', '', atLoad.gcmStatus ? JSON.stringify(atLoad.gcmStatus, null, 2) : '(no ucGcmStatus key)'),
-    );
-    host.appendChild(el('div', 'sub', 'Now (after the CMP wrote to it):'));
-    host.appendChild(el('pre', '', live ? JSON.stringify(live, null, 2) : '(no ucGcmStatus key)'));
+    host.appendChild(el('div', 'sub', 'At page load (before the CMP ran) — ' + (atLoad.snapWhere || 'nothing cached') + ':'));
+    host.appendChild(el('pre', '', atLoad.gcmStatus ? JSON.stringify(atLoad.gcmStatus, null, 2) : '(no snapshot)'));
+    host.appendChild(el('div', 'sub', 'Now (after the CMP wrote to it) — ' + (live.where || 'nothing stored') + ':'));
+    host.appendChild(el('pre', '', live.value ? JSON.stringify(live.value, null, 2) : '(no snapshot)'));
     host.appendChild(
       el(
         'div',
         'hint',
-        'The key must exist only when Google Consent Mode is ON and at least one Data Layer is configured ' +
-          '(isGcmStatusTrackingEnabled). ucString present: ' + (atLoad.hasUcString ? 'yes' : 'no') + '.',
+        'Must exist only when Google Consent Mode is ON and at least one Data Layer is configured ' +
+          '(isGcmStatusTrackingEnabled). ucString present: ' + (atLoad.hasUcString ? 'yes' : 'no') +
+          '. Legacy ucGcmStatus key: ' + (readJson('ucGcmStatus') ? 'present' : 'absent') +
+          '. ucData.gcm (pre-7091 field): ' + (ucData && ucData.gcm ? 'present' : 'absent') + '.',
       ),
     );
   }
@@ -621,21 +768,59 @@
    * Same manipulations the unit tests do (consentStatusEarlyEmit.test.ts), but
    * against real localStorage, so each AC3 guard can be exercised by hand.   */
 
-  function tamper(mutate, note, label) {
-    var snap = readJson('ucGcmStatus');
+  function tamper(mutate, note, label, whole) {
+    var found = readSnapshot();
+    var snap = found.value;
     if (!snap || !snap.consentStatus) {
-      alert('No ucGcmStatus snapshot yet. Accept consent once, then reload.');
+      alert('No snapshot yet. Accept consent once, then reload.');
       return;
     }
-    mutate(snap.consentStatus);
+    if (whole) mutate(snap);
+    else mutate(snap.consentStatus);
     try {
-      localStorage.setItem('ucGcmStatus', JSON.stringify(snap));
+      writeSnapshot(found.where, snap);
       sessionStorage.setItem(TAMPER_FLAG, label);
     } catch (e) {}
     if (confirm(note + '\n\nReload now to see the guard take effect?')) location.reload();
   }
 
+  // Recreates exactly what a visitor carries after the EUD-4042 release: the
+  // snapshot in the top-level ucGcmStatus key, no gcmUpdate in it, nothing in
+  // ucData.gcmStatus, and the old ucData.gcm field.
+  function seedLegacyKey() {
+    var found = readSnapshot();
+    if (!found.value || !found.value.consentStatus) {
+      alert('No snapshot yet. Accept consent once, then reload.');
+      return;
+    }
+    var legacy = { consentStatus: found.value.consentStatus, dataLayerNames: found.value.dataLayerNames };
+    var ucData = readJson('ucData') || {};
+    if (found.value.gcmUpdate) ucData.gcm = found.value.gcmUpdate;
+    delete ucData.gcmStatus;
+    try {
+      localStorage.setItem('ucData', JSON.stringify(ucData));
+      localStorage.setItem('ucGcmStatus', JSON.stringify(legacy));
+    } catch (e) {}
+    if (confirm('Storage now looks like a visitor from the EUD-4042 release: legacy ucGcmStatus key, ' +
+      'no ucData.gcmStatus.\nExpected on reload: legacy key deleted, no early emit, snapshot rebuilt in ' +
+      'ucData.gcmStatus with gcmUpdate.\n\nReload now?')) location.reload();
+  }
+
   var TAMPERS = [
+    [
+      'Drop gcmUpdate',
+      function () {
+        tamper(
+          function (snap) {
+            delete snap.gcmUpdate;
+          },
+          'gcmUpdate removed from the snapshot.\nExpected: no early emit of either signal, gcmUpdate backfilled (EUD-7091).',
+          'gcmUpdate',
+          true,
+        );
+      },
+    ],
+    ['Seed legacy ucGcmStatus', seedLegacyKey],
     [
       'Break consentHash',
       function () {
@@ -704,13 +889,14 @@
   function report() {
     var v = verdict();
     var lines = [];
-    lines.push('EUD-4042 test stand report');
+    lines.push('EUD-4042 / EUD-7091 test stand report');
     lines.push('page:       ' + PAGE.name + '  (' + location.href + ')');
     lines.push('loader:     ' + cfg.loader);
     lines.push('settingsId: ' + cfg.settingsId + '   data-sandbox: ' + (cfg.sandbox ? '1' : '(off)'));
     lines.push('GTM:        ' + (detectGtmContainer() || '(no container on page)') + '   pixel: ' + cfg.pixel);
     lines.push('service:    ' + (cfg.service || '(falling back to marketing category)'));
-    lines.push('GPC:        ' + (atLoad.gpc ? 'ACTIVE' : 'off'));
+    lines.push('GPC:        ' + (atLoad.gpc ? 'ACTIVE' : 'off') + '   Wix (ucSkipGtagUpdates): ' + (atLoad.wix ? 'ON' : 'off'));
+    lines.push('build:      ' + buildFlavor() + '   (7091 = snapshot in ucData.gcmStatus, 4042 = legacy ucGcmStatus key)');
     lines.push('');
     lines.push(v.text);
     lines.push('');
@@ -719,11 +905,12 @@
       lines.push(String(e.t).padStart(6) + 'ms  ' + (KIND_LABEL[e.kind] || '-') + '  ' + e.label);
     });
     lines.push('');
-    lines.push('--- ucGcmStatus at page load ---');
+    lines.push('--- snapshot at page load (' + (atLoad.snapWhere || 'none') + ') ---');
     lines.push(atLoad.gcmStatus ? JSON.stringify(atLoad.gcmStatus, null, 2) : '(none)');
-    lines.push('--- ucGcmStatus now ---');
-    var live = readJson('ucGcmStatus');
-    lines.push(live ? JSON.stringify(live, null, 2) : '(none)');
+    var live = readSnapshot();
+    lines.push('--- snapshot now (' + (live.where || 'none') + ') ---');
+    lines.push(live.value ? JSON.stringify(live.value, null, 2) : '(none)');
+    lines.push('legacy ucGcmStatus key now: ' + (readJson('ucGcmStatus') ? 'PRESENT' : 'absent'));
     return lines.join('\n');
   }
 
@@ -788,7 +975,7 @@
 
     host.innerHTML =
       '<header>' +
-      '<strong>EUD-4042 stand</strong>' +
+      '<strong>EUD-4042 / 7091 stand</strong>' +
       '<span id="uc-page-name"></span>' +
       '<button id="uc-collapse" title="collapse">–</button>' +
       '</header>' +
@@ -798,9 +985,9 @@
       '<div class="acts" id="uc-acts"></div>' +
       '<h4>dataLayer timeline</h4>' +
       '<div id="uc-timeline"></div>' +
-      '<h4>ucGcmStatus</h4>' +
+      '<h4>GCM snapshot</h4>' +
       '<div id="uc-snapshot"></div>' +
-      '<h4>break a guard (AC3)</h4>' +
+      '<h4>break a guard / simulate a visitor</h4>' +
       '<div class="acts" id="uc-tampers"></div>' +
       '</div>';
 
@@ -820,11 +1007,15 @@
     var container = detectGtmContainer();
     cfgRow('settingsId', cfg.settingsId || 'NOT SET — pass ?settingsId=…', !cfg.settingsId);
     cfgRow('loader', cfg.loader.replace('https://', ''));
+    if (cfg.loader.indexOf('/pr/1628/') !== -1) {
+      cfgRow('build', 'PR 1628 is the OLD EUD-4042 build — for EUD-7091 pass ?loader=<EUD-7091 PR loader URL>', true);
+    }
     cfgRow('data-sandbox', cfg.sandbox ? '1' : 'off');
     cfgRow('GTM', container || 'no container snippet on this page', !container);
     cfgRow('pixel ID', cfg.pixel);
     cfgRow('service (DPS)', cfg.service || 'marketing category (fallback)', !cfg.service);
     cfgRow('GPC', atLoad.gpc ? 'ACTIVE' + (cfg.gpc === '1' ? ' (shimmed by ?gpc=1)' : ' (browser)') : 'off');
+    cfgRow('Wix', atLoad.wix ? 'ucSkipGtagUpdates = true' + (cfg.wix === '1' ? ' (shimmed by ?wix=1)' : '') : 'off');
 
     var acts = host.querySelector('#uc-acts');
     [
@@ -835,8 +1026,11 @@
         function () {
           if (!window.__ucCmp) return alert('__ucCmp not available yet.');
           window.__ucCmp.clearUserSession().then(function () {
-            alert('clearUserSession() done. ucGcmStatus must be gone (AC7).\n\nucGcmStatus now: ' +
-              (localStorage.getItem('ucGcmStatus') || '(removed)'));
+            var d = readJson('ucData');
+            alert('clearUserSession() done. The snapshot must be gone (AC7).\n\n' +
+              'ucData: ' + (d ? 'PRESENT' : '(removed)') + '\n' +
+              'ucData.gcmStatus: ' + (d && d.gcmStatus ? 'PRESENT' : '(removed)') + '\n' +
+              'legacy ucGcmStatus: ' + (localStorage.getItem('ucGcmStatus') ? 'PRESENT' : '(removed)'));
           });
         },
       ],
@@ -922,5 +1116,11 @@
       drainUnseen();
       return consentStatusEntries().length;
     },
+    consentUpdateCount: function () {
+      drainUnseen();
+      return consentUpdateEntries().length;
+    },
+    snapshot: readSnapshot,
+    build: buildFlavor,
   };
 })();
